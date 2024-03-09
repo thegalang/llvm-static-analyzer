@@ -54,6 +54,11 @@ public:
 		return isPositiveInfinity() || isNegativeInfinity();
 	}
 
+	AbstractNumber() {
+		number = 0;
+		infinityType = InfinityType::Finite;
+	}
+
 	AbstractNumber(int x) {
 		number = x;
 		infinityType = InfinityType::Finite;
@@ -69,6 +74,20 @@ public:
 
 		infinityType = type;
 	}	
+
+	bool operator<(const AbstractNumber &other) const {
+
+		// same infinity
+		if((isPositiveInfinity() && other.isPositiveInfinity()) || (isNegativeInfinity() && other.isNegativeInfinity())) {
+			return false;
+		}
+
+		if(isNegativeInfinity() || other.isPositiveInfinity()) return true;
+		if(isPositiveInfinity() || other.isNegativeInfinity()) return false;
+
+		return number < other.number;
+	}
+
 
 	AbstractNumber operator+(AbstractNumber const& other) {
 
@@ -189,8 +208,9 @@ public:
 			return AbstractNumber(0, InfinityType::PositiveInfinity);
 		}
 
+		// infininity modulo infinity should max at infinity
 		if(numPositiveInfinity == 1 && numNegativeInfinity == 1) {
-			return AbstractNumber(0, InfinityType::NegativeInfinity);
+			return AbstractNumber(0, InfinityType::PositiveInfinity);
 		}
 
 
@@ -198,8 +218,7 @@ public:
 		// if inf module then second element
 		if(numPositiveInfinity == 1 || numNegativeInfinity == 1) {
 
-			if(other.isInfinity()) return *this;
-			else return other;
+			return (other.isInfinity()) ? *this : other;
 		}
 		
 
@@ -208,6 +227,161 @@ public:
 	}
 };
 
-int main() {
+class AbstractDomain {
+
+public:
+	AbstractNumber mn, mx;
+	bool isEmpty;
+
+	AbstractDomain() {
+		isEmpty = true;
+	}
+
+	AbstractDomain(AbstractDomain &&other) {
+		mn = other.mn;
+		mx = other.mx;
+		isEmpty = other.isEmpty;
+	}
+
+	AbstractDomain(AbstractNumber _mn, AbstractNumber _mx) {
+		mn = _mn;
+		mx = _mx;
+		isEmpty = false;
+	}
+};
+
+AbstractNumber absMin(AbstractNumber a, AbstractNumber b) {
+	return (a < b) ? a : b;
+}
+
+AbstractNumber absMax(AbstractNumber a, AbstractNumber b) {
+	return (a < b) ? b : a;
+}
+
+
+AbstractDomain merge(AbstractDomain a, AbstractDomain b) {
+
+	if(a.isEmpty) return b;
+	if(b.isEmpty) return a;
+
+	return AbstractDomain(min(a.mn, b.mn), max(a.mx, b.mx));
+
+}
+
+AbstractDomain widening(AbstractDomain a, AbstractDomain b) {
+
+	if(a.isEmpty) return b;
+	if(b.isEmpty) return a;
+	
+	AbstractNumber newMin = (b.mn < a.mn) ? AbstractNumber(0, InfinityType::NegativeInfinity) : a.mn;
+	AbstractNumber newMax = (a.mx < b.mx) ? AbstractNumber(0, InfinityType::PositiveInfinity) : a.mx;
+
+	return AbstractDomain(newMin, newMax);
+}
+
+AbstractDomain narrowing(AbstractDomain a, AbstractDomain b) {
+
+	if(a.isEmpty) return b;
+	if(b.isEmpty) return a;
+
+	AbstractNumber newMin = (a.mn.isNegativeInfinity()) ? b.mn : a.mn;
+	AbstractNumber newMax = (a.mx.isPositiveInfinity()) ? b.mx : a.mx;
+
+	return AbstractDomain(newMin, newMax);
+}
+
+// Value* variable, AbstractDomain: its range
+using VariableInterval = map<Value*, AbstractDomain>;
+
+string getSimpleNodeLabel(const BasicBlock *Node) {
+    if (!Node->getName().empty()){
+	//errs()<<Node->getName().str();
+        return Node->getName().str();}
+    string Str;
+    raw_string_ostream OS(Str);
+    Node->printAsOperand(OS, false);
+    return OS.str();
+}
+
+
+string getValueName(const Value* Node) {
+	if (!Node->getName().empty()){
+	//errs()<<Node->getName().str();
+        return Node->getName().str();}
+    std::string Str;
+    raw_string_ostream OS(Str);
+    Node->printAsOperand(OS, false);
+    return OS.str();
+}
+
+
+// performs interval analysis using mergeFunc merger (merge, widening, narrowing)
+map<string, VariableInterval> intervalAnalysisProcess(Function *F, function<AbstractDomain(AbstractDomain, AbstractDomain)> mergeFunc)  {
+
+	map<string, VariableInterval> intervalAnalysis;
+	
+	bool existUpdate = true;
+	while(existUpdate) {
+
+		existUpdate = false;
+
+		// update intervals for all guys
+		for(auto &BB : *F) {
+
+			string blockName = getSimpleNodeLabel(&BB);
+
+			// for(Instruction &I : BB) {
+
+			// 	if(isa<AllocaInst>(I)) {
+			// 		Value* variableName = llvm::cast<Value>(&I);
+
+			// 		if()
+			// 	}
+
+			// 	if(isa<LoadInst>(I)) {
+
+			// 		// %2 = load i32, i32* %b, align 4
+			// 		Value* source = I.getOperand(0);
+			// 		Value* target = llvm::cast<Value>(&I);
+
+			// 		registersToVariable[target] = getTrueValue(source);
+
+
+			// 	}
+
+			// 	if(isa<BinaryOperator>(I)) {
+
+			// 		Value* op1 = I.getOperand(0);
+			// 		Value* op2 = I.getOperand(1);
+
+			// 		Value* target = llvm::cast<Value>(&I);
+			// 		registersToVariable[target] = target;
+
+
+			// 	}
+			// }
+		}
+	}
+
+	return intervalAnalysis;
+
+}
+
+
+int main(int argc, char **argv)  {
+	LLVMContext &Context = MyGlobalContext;
+	SMDiagnostic Err;
+
+	auto M = parseIRFile(argv[1], Err, Context);
+	if(M == nullptr) {
+		fprintf(stderr, "error: failed to load LLVM IR file \"%s\"", argv[1]);
+		return EXIT_FAILURE;
+	}
+
+	// extract function main
+	Function *F = M->getFunction("main");
+
+
+
 	
 }
