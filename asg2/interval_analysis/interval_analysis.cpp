@@ -225,6 +225,12 @@ public:
 		// two finites
 		return AbstractNumber(number % other.number);
 	}
+
+	operator std::string() const { 
+		if(isFinite()) return to_string(number);
+		else if(isPositiveInfinity()) return "+inf";
+		else return "-inf";
+	}
 };
 
 class AbstractDomain {
@@ -237,41 +243,58 @@ public:
 		isEmpty = true;
 	}
 
-	AbstractDomain(AbstractDomain &&other) {
+	AbstractDomain(const AbstractDomain &other) {
 		mn = other.mn;
 		mx = other.mx;
 		isEmpty = other.isEmpty;
 	}
 
+	// AbstractDomain(const AbstractDomain &&other) {
+	// 	mn = other.mn;
+	// 	mx = other.mx;
+	// 	isEmpty = other.isEmpty;
+	// }
+
 	AbstractDomain(AbstractNumber _mn, AbstractNumber _mx) {
 		mn = _mn;
 		mx = _mx;
 		isEmpty = false;
+
 	}
+
+	AbstractDomain operator+(AbstractDomain const& other) {
+		AbstractDomain ret = AbstractDomain(mn + other.mn, mx + other.mx);
+		return ret;
+	}
+
+	operator string() const { 
+		return "[" + string(mn) + ", " + string(mx) + "]";
+	}
+
 };
 
-AbstractNumber absMin(AbstractNumber a, AbstractNumber b) {
-	return (a < b) ? a : b;
-}
+// AbstractNumber absMin(AbstractNumber a, AbstractNumber b) {
+// 	return (a < b) ? a : b;
+// }
 
-AbstractNumber absMax(AbstractNumber a, AbstractNumber b) {
-	return (a < b) ? b : a;
-}
+// AbstractNumber absMax(AbstractNumber a, AbstractNumber b) {
+// 	return (a < b) ? b : a;
+// }
 
 
-AbstractDomain merge(AbstractDomain a, AbstractDomain b) {
+AbstractDomain mergeNormal(const AbstractDomain &a, const AbstractDomain &b) {
 
-	if(a.isEmpty) return b;
-	if(b.isEmpty) return a;
+	if(a.isEmpty) return AbstractDomain(b);
+	if(b.isEmpty) return AbstractDomain(a);
 
 	return AbstractDomain(min(a.mn, b.mn), max(a.mx, b.mx));
 
 }
 
-AbstractDomain widening(AbstractDomain a, AbstractDomain b) {
+AbstractDomain widening(const AbstractDomain &a, const AbstractDomain &b) {
 
-	if(a.isEmpty) return b;
-	if(b.isEmpty) return a;
+	if(a.isEmpty) return AbstractDomain(b);
+	if(b.isEmpty) return AbstractDomain(a);
 	
 	AbstractNumber newMin = (b.mn < a.mn) ? AbstractNumber(0, InfinityType::NegativeInfinity) : a.mn;
 	AbstractNumber newMax = (a.mx < b.mx) ? AbstractNumber(0, InfinityType::PositiveInfinity) : a.mx;
@@ -279,10 +302,10 @@ AbstractDomain widening(AbstractDomain a, AbstractDomain b) {
 	return AbstractDomain(newMin, newMax);
 }
 
-AbstractDomain narrowing(AbstractDomain a, AbstractDomain b) {
+AbstractDomain narrowing(const AbstractDomain &a, const AbstractDomain &b) {
 
-	if(a.isEmpty) return b;
-	if(b.isEmpty) return a;
+	if(a.isEmpty) return AbstractDomain(b);
+	if(b.isEmpty) return AbstractDomain(a);
 
 	AbstractNumber newMin = (a.mn.isNegativeInfinity()) ? b.mn : a.mn;
 	AbstractNumber newMax = (a.mx.isPositiveInfinity()) ? b.mx : a.mx;
@@ -314,9 +337,17 @@ string getValueName(const Value* Node) {
     return OS.str();
 }
 
+void mergeVariableIntervals(const VariableInterval& from, VariableInterval &to, function<AbstractDomain(AbstractDomain, AbstractDomain)> mergeFunc ) {
+	for(auto &variableData: from) {
+		auto variableValue = variableData.first;
+		to[variableValue] = mergeFunc(variableData.second, to[variableValue]);
+	}
+}
+
+using intervalMergeFunct = function<AbstractDomain(const AbstractDomain&, const AbstractDomain&)>;
 
 // performs interval analysis using mergeFunc merger (merge, widening, narrowing)
-map<string, VariableInterval> intervalAnalysisProcess(Function *F, function<AbstractDomain(AbstractDomain, AbstractDomain)> mergeFunc)  {
+map<string, VariableInterval> intervalAnalysisProcess(Function *F, intervalMergeFunct mergeFunc)  {
 
 	map<string, VariableInterval> intervalAnalysis;
 	
@@ -328,38 +359,63 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, function<Abst
 		// update intervals for all guys
 		for(auto &BB : *F) {
 
+
+
 			string blockName = getSimpleNodeLabel(&BB);
 
-			// for(Instruction &I : BB) {
+			VariableInterval intervalInBlock = intervalAnalysis[blockName];
 
-			// 	if(isa<AllocaInst>(I)) {
-			// 		Value* variableName = llvm::cast<Value>(&I);
+			// merge values from previous interval
+			for(auto *Preds : predecessors(&BB)) {
 
-			// 		if()
-			// 	}
+				string predBlockName = getSimpleNodeLabel(&BB);
 
-			// 	if(isa<LoadInst>(I)) {
-
-			// 		// %2 = load i32, i32* %b, align 4
-			// 		Value* source = I.getOperand(0);
-			// 		Value* target = llvm::cast<Value>(&I);
-
-			// 		registersToVariable[target] = getTrueValue(source);
+				mergeVariableIntervals(intervalAnalysis[predBlockName], intervalInBlock, mergeFunc);
+			}
 
 
-			// 	}
+			for(Instruction &I : BB) {
 
-			// 	if(isa<BinaryOperator>(I)) {
+				if(isa<AllocaInst>(I)) {
+					Value* variable = llvm::cast<Value>(&I);
 
-			// 		Value* op1 = I.getOperand(0);
-			// 		Value* op2 = I.getOperand(1);
+					if(intervalInBlock.find(variable) == intervalInBlock.end()) {
+						intervalInBlock[variable] = AbstractDomain(AbstractNumber(0, InfinityType::NegativeInfinity), AbstractNumber(0, InfinityType::PositiveInfinity));
+					}
+				}
 
-			// 		Value* target = llvm::cast<Value>(&I);
-			// 		registersToVariable[target] = target;
+				if(isa<LoadInst>(I)) {
+
+					// %2 = load i32, i32* %b, align 4
+					Value* source = I.getOperand(0);
+					Value* target = llvm::cast<Value>(&I);
+
+					intervalInBlock[target] = intervalInBlock[source];
 
 
-			// 	}
-			// }
+				}
+
+				if(isa<BinaryOperator>(I)) {
+
+					Value* op1 = I.getOperand(0);
+					Value* op2 = I.getOperand(1);
+
+					Value* target = llvm::cast<Value>(&I);
+
+					auto op1Domain = intervalInBlock[op1];
+					auto op2Domain = intervalInBlock[op2];
+
+					AbstractDomain targetDomain;
+
+					switch(I.getOpcode()) {
+					case Instruction::Add:
+						targetDomain = op1Domain + op2Domain;
+						break;
+					}
+
+
+				}
+			}
 		}
 	}
 
@@ -380,6 +436,19 @@ int main(int argc, char **argv)  {
 
 	// extract function main
 	Function *F = M->getFunction("main");
+
+	intervalMergeFunct mergeAsF = mergeNormal;
+
+	auto normalIntervalAnalysis = intervalAnalysisProcess(F, mergeAsF);
+
+	for(auto item: normalIntervalAnalysis) {
+		outs()<<"intervals in: "<<item.first<<"\n";
+
+		for(auto varInterval: item.second) {
+
+			outs()<<getValueName(varInterval.first)<<" "<<varInterval.second<<"\n";
+		}
+	}
 
 
 
