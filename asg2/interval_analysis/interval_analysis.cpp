@@ -88,6 +88,10 @@ public:
 		return number < other.number;
 	}
 
+	bool operator==(const AbstractNumber &other) const {
+		return string(*this) == string(other);
+	}
+
 
 	AbstractNumber operator+(AbstractNumber const& other) {
 
@@ -226,6 +230,8 @@ public:
 		return AbstractNumber(number % other.number);
 	}
 
+
+
 	operator std::string() const { 
 		if(isFinite()) return to_string(number);
 		else if(isPositiveInfinity()) return "+inf";
@@ -262,6 +268,10 @@ public:
 		isEmpty = false;
 	}
 
+	bool operator==(AbstractDomain const& other) const {
+		return mn == other.mn && mx == other.mx;
+	}
+
 	AbstractDomain operator+(AbstractDomain const& other) {
 		AbstractDomain ret = AbstractDomain(mn + other.mn, mx + other.mx);
 		outs()<<"adding "<<*this<<" "<<other<<" "<<ret<<"\n";
@@ -276,6 +286,7 @@ public:
 	operator string() const { 
 		return "[" + string(mn) + ", " + string(mx) + "]";
 	}
+
 
 };
 
@@ -468,7 +479,11 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, intervalMerge
 				}
 			}
 
-			intervalAnalysis[blockName] = intervalInBlock;
+			// will loop again from the front. will be used in forloops
+			if(intervalAnalysis[blockName] != intervalInBlock) {
+				existUpdate = true;
+				intervalAnalysis[blockName] = intervalInBlock;
+			}
 		}
 	}
 
