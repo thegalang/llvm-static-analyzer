@@ -39,11 +39,11 @@ public:
 	
 
 	bool isPositiveInfinity() const {
-		return infinityType == InfinityType::NegativeInfinity;
+		return infinityType == InfinityType::PositiveInfinity;
 	}
 
 	bool isNegativeInfinity() const {
-		return infinityType == InfinityType::PositiveInfinity;
+		return infinityType == InfinityType::NegativeInfinity;
 	}
 
 	bool isFinite() const {
@@ -123,7 +123,7 @@ public:
 			return AbstractNumber(0, InfinityType::NegativeInfinity);
 		}
 
-		return AbstractNumber(number + other.number);
+		return AbstractNumber(number - other.number);
 	}
 
 	AbstractNumber operator*(AbstractNumber const& other) {
@@ -249,12 +249,6 @@ public:
 		isEmpty = other.isEmpty;
 	}
 
-	// AbstractDomain(const AbstractDomain &&other) {
-	// 	mn = other.mn;
-	// 	mx = other.mx;
-	// 	isEmpty = other.isEmpty;
-	// }
-
 	AbstractDomain(AbstractNumber _mn, AbstractNumber _mx) {
 		mn = _mn;
 		mx = _mx;
@@ -262,8 +256,20 @@ public:
 
 	}
 
+	AbstractDomain(int _mn, int _mx) {
+		mn = AbstractNumber(_mn);
+		mx = AbstractNumber(_mx);
+		isEmpty = false;
+	}
+
 	AbstractDomain operator+(AbstractDomain const& other) {
 		AbstractDomain ret = AbstractDomain(mn + other.mn, mx + other.mx);
+		outs()<<"adding "<<*this<<" "<<other<<" "<<ret<<"\n";
+		return ret;
+	}
+
+	AbstractDomain operator-(AbstractDomain const& other) {
+		AbstractDomain ret = AbstractDomain(mn - other.mn, mx - other.mx);
 		return ret;
 	}
 
@@ -272,15 +278,6 @@ public:
 	}
 
 };
-
-// AbstractNumber absMin(AbstractNumber a, AbstractNumber b) {
-// 	return (a < b) ? a : b;
-// }
-
-// AbstractNumber absMax(AbstractNumber a, AbstractNumber b) {
-// 	return (a < b) ? b : a;
-// }
-
 
 AbstractDomain mergeNormal(const AbstractDomain &a, const AbstractDomain &b) {
 
@@ -339,12 +336,45 @@ string getValueName(const Value* Node) {
 
 void mergeVariableIntervals(const VariableInterval& from, VariableInterval &to, function<AbstractDomain(AbstractDomain, AbstractDomain)> mergeFunc ) {
 	for(auto &variableData: from) {
+
+
 		auto variableValue = variableData.first;
+		//errs()<<" merging "<<getValueName(variableValue)<<"\n";
 		to[variableValue] = mergeFunc(variableData.second, to[variableValue]);
 	}
 }
 
 using intervalMergeFunct = function<AbstractDomain(const AbstractDomain&, const AbstractDomain&)>;
+
+// find all variables in the program
+
+set<Value*> findAllVariables(Function *F) {
+
+	set<Value*> ret;
+	for(auto &BB : *F) {
+
+		for(Instruction &I : BB) {
+
+			if(isa<AllocaInst>(I)) {
+				Value* variable = llvm::cast<Value>(&I);
+
+				ret.insert(variable);
+			}
+		}
+	}
+
+	return ret;
+}
+
+AbstractDomain getAbstractDomain(VariableInterval &variableInterval, Value* var) {
+	if(isa<ConstantInt>(var)) {
+		auto constantInt = llvm::cast<ConstantInt>(var);
+
+		return AbstractDomain(constantInt->getSExtValue (), constantInt->getSExtValue ());
+	}
+
+	return variableInterval[var];
+}
 
 // performs interval analysis using mergeFunc merger (merge, widening, narrowing)
 map<string, VariableInterval> intervalAnalysisProcess(Function *F, intervalMergeFunct mergeFunc)  {
@@ -359,16 +389,19 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, intervalMerge
 		// update intervals for all guys
 		for(auto &BB : *F) {
 
-
-
 			string blockName = getSimpleNodeLabel(&BB);
+
+			errs()<<"processing "<<blockName<<"\n";
+
+			
 
 			VariableInterval intervalInBlock = intervalAnalysis[blockName];
 
 			// merge values from previous interval
 			for(auto *Preds : predecessors(&BB)) {
 
-				string predBlockName = getSimpleNodeLabel(&BB);
+				string predBlockName = getSimpleNodeLabel(Preds);
+				//errs()<<"BB "<<predBlockName<<"\n";
 
 				mergeVariableIntervals(intervalAnalysis[predBlockName], intervalInBlock, mergeFunc);
 			}
@@ -390,8 +423,19 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, intervalMerge
 					Value* source = I.getOperand(0);
 					Value* target = llvm::cast<Value>(&I);
 
-					intervalInBlock[target] = intervalInBlock[source];
 
+					intervalInBlock[target] = getAbstractDomain(intervalInBlock, source);
+
+
+				}
+
+				if(isa<StoreInst>(I)) {
+
+					Value* target = I.getOperand(1);
+
+					Value* source = I.getOperand(0);
+
+					intervalInBlock[target] = getAbstractDomain(intervalInBlock, source);
 
 				}
 
@@ -402,20 +446,29 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, intervalMerge
 
 					Value* target = llvm::cast<Value>(&I);
 
-					auto op1Domain = intervalInBlock[op1];
-					auto op2Domain = intervalInBlock[op2];
+					auto op1Domain = getAbstractDomain(intervalInBlock, op1);
+					auto op2Domain = getAbstractDomain(intervalInBlock, op2);
 
 					AbstractDomain targetDomain;
 
 					switch(I.getOpcode()) {
 					case Instruction::Add:
 						targetDomain = op1Domain + op2Domain;
+						//outs()<<"MASHOK ADD "<<intervalInBlock"\n";
+						break;
+
+					case Instruction::Sub:
+						targetDomain = op1Domain - op2Domain;
 						break;
 					}
 
 
+					intervalInBlock[target] = targetDomain;
+
 				}
 			}
+
+			intervalAnalysis[blockName] = intervalInBlock;
 		}
 	}
 
@@ -437,17 +490,23 @@ int main(int argc, char **argv)  {
 	// extract function main
 	Function *F = M->getFunction("main");
 
+	auto variables = findAllVariables(F);
+
+	//errs()<<variables.size()<<"\n";
+
 	intervalMergeFunct mergeAsF = mergeNormal;
 
-	auto normalIntervalAnalysis = intervalAnalysisProcess(F, mergeAsF);
+	auto normalIntervalAnalysis = intervalAnalysisProcess(F, mergeNormal);
 
 	for(auto item: normalIntervalAnalysis) {
 		outs()<<"intervals in: "<<item.first<<"\n";
 
 		for(auto varInterval: item.second) {
-
-			outs()<<getValueName(varInterval.first)<<" "<<varInterval.second<<"\n";
+			if(variables.find(varInterval.first) != variables.end())
+				outs()<<getValueName(varInterval.first)<<" "<<varInterval.second<<"\n";
 		}
+
+		outs()<<"\n";
 	}
 
 
