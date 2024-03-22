@@ -536,224 +536,221 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, bool isPathSe
 	auto &entryBlock = F->getEntryBlock();
 	string entryBlockName = getSimpleNodeLabel(&entryBlock);
 
-	bool existUpdate = true;
-	while(existUpdate) {
+	// parent, child
+	stack<pair<BasicBlock*, BasicBlock*>> traversalStack;
+	traversalStack.push({nullptr, &entryBlock});
 
-		existUpdate = false;
+	while(!traversalStack.empty()) {
 
-		// update intervals for all guys
-		for(auto &BB : *F) {
+		auto nextVisit = traversalStack.top();
+		traversalStack.pop();
 
-			string blockName = getSimpleNodeLabel(&BB);
+		BasicBlock* parent = nextVisit.first;
+		BasicBlock* BB = nextVisit.second;
 
-			errs()<<"processing "<<blockName<<"\n";
+
+		string blockName = getSimpleNodeLabel(&BB);
+
+		errs()<<"processing "<<blockName<<"\n";
+
+
+		VariableInterval intervalInBlock = intervalAnalysis[blockName];
+
+		// merge values from parent block
+		if(parent != nullptr) {
+
+			string predBlockName = getSimpleNodeLabel(parent);
+			errs()<<"merging variables from "<<predBlockName<<"\n";
+			canSomebodyReach = true;
+			mergeVariableIntervals(intervalAnalysis[predBlockName], intervalFromPredessors, mergeFunc);
+	
+		}
+
+		// no parent can reach this means we dont need to process this (unreachable)
+		if(!canSomebodyReach && blockName != entryBlockName) continue;
+
+		mergeVariableIntervals(intervalFromPredessors, intervalInBlock, mergeFunc);
+
+
+		for(Instruction &I : BB) {
+
+			if(isa<AllocaInst>(I)) {
+				Value* variable = llvm::cast<Value>(&I);
+
+				if(intervalInBlock.find(variable) == intervalInBlock.end()) {
+					intervalInBlock[variable] = AbstractDomain(AbstractNumber(0, InfinityType::NegativeInfinity), AbstractNumber(0, InfinityType::PositiveInfinity));
+				}
+			}
+
+			if(isa<LoadInst>(I)) {
+
+				// %2 = load i32, i32* %b, align 4
+				Value* source = I.getOperand(0);
+				Value* target = llvm::cast<Value>(&I);
+
+
+				intervalInBlock[target] = getAbstractDomain(intervalInBlock, source);
+
+
+			}
+
+			if(isa<StoreInst>(I)) {
+
+				Value* target = I.getOperand(1);
+
+				Value* source = I.getOperand(0);
+
+				intervalInBlock[target] = getAbstractDomain(intervalInBlock, source);
+
+			}
+
+			if(isa<BinaryOperator>(I)) {
+
+				Value* op1 = I.getOperand(0);
+				Value* op2 = I.getOperand(1);
+
+				Value* target = llvm::cast<Value>(&I);
+
+				auto op1Domain = getAbstractDomain(intervalInBlock, op1);
+				auto op2Domain = getAbstractDomain(intervalInBlock, op2);
+
+				AbstractDomain targetDomain;
+
+				switch(I.getOpcode()) {
+				case Instruction::Add:
+					targetDomain = op1Domain + op2Domain;
+					//outs()<<"MASHOK ADD "<<intervalInBlock"\n";
+					break;
+
+				case Instruction::Sub:
+					targetDomain = op1Domain - op2Domain;
+					break;
+
+				case Instruction::Mul:
+					targetDomain = op1Domain * op2Domain;
+					break;
+
+				case Instruction::SDiv:
+					targetDomain = op2Domain / op2Domain;
+					break;
+
+				case Instruction::SRem:
+					targetDomain = op1Domain % op2Domain;
+					break;
+				default:
+					errs()<<"ERROR: BINARY OPERATOR NOT SUPPORTED: "<<instructionToString(I)<<"\n";
+					assert(false);
+
+				}
+
+
+
+				intervalInBlock[target] = targetDomain;
+
+			} if(isa<CmpInst>(I) && isPathSensitive) {
+
+				CmpInst &Ic = llvm::cast<CmpInst>(I);
+
+				Value* op1 = Ic.getOperand(0);
+				Value* op2 = Ic.getOperand(1);
+
+				Value* target = llvm::cast<Value>(&I);
+
+				if(!isa<ConstantInt>(op2)) {
+					errs()<<"==== ERROR ICMP MUST BE WITH A CONSTANT INT, got: "<<instructionToString(I)<<"\n";
+				}
+
+				AbstractDomain op1Domain = getAbstractDomain(intervalInBlock, op1);
+				int constValue = getConstantIntValue(op2);
+
+				IcmpResult res;
+
+				switch(Ic.getPredicate()) {
+				case CmpInst::ICMP_NE:
+					res = neInterval(op1Domain, constValue);
+					break;
+				case CmpInst::ICMP_EQ:
+					res = eqInterval(op1Domain, constValue);
+					break;
+				case CmpInst::ICMP_SLE:
+					res = sleInterval(op1Domain, constValue);
+					break;
+				case CmpInst::ICMP_SGT:
+					res = sgtInterval(op1Domain, constValue);
+					break;
+				case CmpInst::ICMP_SLT:
+					res = sltInterval(op1Domain, constValue);
+					break;
+				case CmpInst::ICMP_SGE:
+					res = sgeInterval(op1Domain, constValue);
+					break;
+				default:
+					errs()<<"ERROR: ICMP INSTRUCTION NOT SUPPORTED: "<<instructionToString(I)<<"\n";
+					assert(false);
+
+				}
+
+				intervalInBlock[target] = res.toAbstractDomain();
+
+				
+			} else if(isa<BranchInst>(I) && isPathSensitive) {
+				errs()<<"Found BR inst "<<instructionToString(I)<<"\n";
+
+				BranchInst &B = llvm::cast<BranchInst>(I);
+				if(B.isUnconditional()) {
+
+					auto nextBlock = B.getSuccessor(0);
+					string nextBlockName = getSimpleNodeLabel(nextBlock);
+					bool newPath = addNewPath(canReachParent, nextBlockName, blockName);
+
+					if(newPath) {
+						errs()<<"Added new path: "<<blockName<<" "<<nextBlockName<<"\n";
+					}
+
+				} else if(B.isConditional()) {
+					Value* condition = B.getCondition();
+
+					auto truePath = B.getSuccessor(0);
+					auto falsePath = B.getSuccessor(1);
+
+					string trueBlockName = getSimpleNodeLabel(truePath);
+					string falseBlockName = getSimpleNodeLabel(falsePath);
+
+					// interval must be inside [0, 1]
+					AbstractDomain conditionInterval = intervalInBlock[condition];
+					if(!(conditionInterval.mn >= 0 && conditionInterval.mx <= 1 && !conditionInterval.isEmpty)) {
+						errs()<<"INVALID INTERVAL FOUND in branch, variable: "<<getValueName(condition)<<" "<<conditionInterval<<"\n";
+						assert(false);
+					}
+
+					int can0 = (conditionInterval.mn == 0);
+					int can1 = (conditionInterval.mx == 1);
+
+					if(can0 && addNewPath(canReachParent, falseBlockName, blockName)) {
+						existUpdate = true;
+						errs()<<"Added new conditional path: "<<blockName<<" "<<falseBlockName<<"\n";
+					}
+
+					if(can1 && addNewPath(canReachParent, trueBlockName, blockName)) {
+						existUpdate = true;
+						errs()<<"Added new conditional path: "<<blockName<<" "<<trueBlockName<<"\n";
+					}
+			
+				}
+			}
 
 			
-
-			VariableInterval intervalInBlock = intervalAnalysis[blockName];
-
-			// merge values from previous interval
-			VariableInterval intervalFromPredessors;
-			bool canSomebodyReach = false;
-			for(auto *Preds : predecessors(&BB)) {
-
-				string predBlockName = getSimpleNodeLabel(Preds);
-
-				if(!isPathSensitive || canReachParent[blockName].find(predBlockName) != canReachParent[blockName].end()) {
-					// merge normally if have multiple precessors, then narrowing once with current saved interval
-					errs()<<"merging variables from "<<predBlockName<<"\n";
-					canSomebodyReach = true;
-					mergeVariableIntervals(intervalAnalysis[predBlockName], intervalFromPredessors, mergeNormal);
-				}
-		
-			}
-
-			// no parent can reach this means we dont need to process this (unreachable)
-			if(!canSomebodyReach && blockName != entryBlockName) continue;
-
-			mergeVariableIntervals(intervalFromPredessors, intervalInBlock, mergeFunc);
-
-
-			for(Instruction &I : BB) {
-
-				if(isa<AllocaInst>(I)) {
-					Value* variable = llvm::cast<Value>(&I);
-
-					if(intervalInBlock.find(variable) == intervalInBlock.end()) {
-						intervalInBlock[variable] = AbstractDomain(AbstractNumber(0, InfinityType::NegativeInfinity), AbstractNumber(0, InfinityType::PositiveInfinity));
-					}
-				}
-
-				if(isa<LoadInst>(I)) {
-
-					// %2 = load i32, i32* %b, align 4
-					Value* source = I.getOperand(0);
-					Value* target = llvm::cast<Value>(&I);
-
-
-					intervalInBlock[target] = getAbstractDomain(intervalInBlock, source);
-
-
-				}
-
-				if(isa<StoreInst>(I)) {
-
-					Value* target = I.getOperand(1);
-
-					Value* source = I.getOperand(0);
-
-					intervalInBlock[target] = getAbstractDomain(intervalInBlock, source);
-
-				}
-
-				if(isa<BinaryOperator>(I)) {
-
-					Value* op1 = I.getOperand(0);
-					Value* op2 = I.getOperand(1);
-
-					Value* target = llvm::cast<Value>(&I);
-
-					auto op1Domain = getAbstractDomain(intervalInBlock, op1);
-					auto op2Domain = getAbstractDomain(intervalInBlock, op2);
-
-					AbstractDomain targetDomain;
-
-					switch(I.getOpcode()) {
-					case Instruction::Add:
-						targetDomain = op1Domain + op2Domain;
-						//outs()<<"MASHOK ADD "<<intervalInBlock"\n";
-						break;
-
-					case Instruction::Sub:
-						targetDomain = op1Domain - op2Domain;
-						break;
-
-					case Instruction::Mul:
-						targetDomain = op1Domain * op2Domain;
-						break;
-
-					case Instruction::SDiv:
-						targetDomain = op2Domain / op2Domain;
-						break;
-
-					case Instruction::SRem:
-						targetDomain = op1Domain % op2Domain;
-						break;
-					default:
-						errs()<<"ERROR: BINARY OPERATOR NOT SUPPORTED: "<<instructionToString(I)<<"\n";
-						assert(false);
-
-					}
-
-
-
-					intervalInBlock[target] = targetDomain;
-
-				} if(isa<CmpInst>(I) && isPathSensitive) {
-
-					CmpInst &Ic = llvm::cast<CmpInst>(I);
-
-					Value* op1 = Ic.getOperand(0);
-					Value* op2 = Ic.getOperand(1);
-
-					Value* target = llvm::cast<Value>(&I);
-
-					if(!isa<ConstantInt>(op2)) {
-						errs()<<"==== ERROR ICMP MUST BE WITH A CONSTANT INT, got: "<<instructionToString(I)<<"\n";
-					}
-
-					AbstractDomain op1Domain = getAbstractDomain(intervalInBlock, op1);
-					int constValue = getConstantIntValue(op2);
-
-					IcmpResult res;
-
-					switch(Ic.getPredicate()) {
-					case CmpInst::ICMP_NE:
-						res = neInterval(op1Domain, constValue);
-						break;
-					case CmpInst::ICMP_EQ:
-						res = eqInterval(op1Domain, constValue);
-						break;
-					case CmpInst::ICMP_SLE:
-						res = sleInterval(op1Domain, constValue);
-						break;
-					case CmpInst::ICMP_SGT:
-						res = sgtInterval(op1Domain, constValue);
-						break;
-					case CmpInst::ICMP_SLT:
-						res = sltInterval(op1Domain, constValue);
-						break;
-					case CmpInst::ICMP_SGE:
-						res = sgeInterval(op1Domain, constValue);
-						break;
-					default:
-						errs()<<"ERROR: ICMP INSTRUCTION NOT SUPPORTED: "<<instructionToString(I)<<"\n";
-						assert(false);
-
-					}
-
-					intervalInBlock[target] = res.toAbstractDomain();
-
-					
-				} else if(isa<BranchInst>(I) && isPathSensitive) {
-					errs()<<"Found BR inst "<<instructionToString(I)<<"\n";
-
-					BranchInst &B = llvm::cast<BranchInst>(I);
-					if(B.isUnconditional()) {
-
-						auto nextBlock = B.getSuccessor(0);
-						string nextBlockName = getSimpleNodeLabel(nextBlock);
-						bool newPath = addNewPath(canReachParent, nextBlockName, blockName);
-
-						if(newPath) {
-							errs()<<"Added new path: "<<blockName<<" "<<nextBlockName<<"\n";
-						}
-
-					} else if(B.isConditional()) {
-						Value* condition = B.getCondition();
-
-						auto truePath = B.getSuccessor(0);
-						auto falsePath = B.getSuccessor(1);
-
-						string trueBlockName = getSimpleNodeLabel(truePath);
-						string falseBlockName = getSimpleNodeLabel(falsePath);
-
-						// interval must be inside [0, 1]
-						AbstractDomain conditionInterval = intervalInBlock[condition];
-						if(!(conditionInterval.mn >= 0 && conditionInterval.mx <= 1 && !conditionInterval.isEmpty)) {
-							errs()<<"INVALID INTERVAL FOUND in branch, variable: "<<getValueName(condition)<<" "<<conditionInterval<<"\n";
-							assert(false);
-						}
-
-						int can0 = (conditionInterval.mn == 0);
-						int can1 = (conditionInterval.mx == 1);
-
-						if(can0 && addNewPath(canReachParent, falseBlockName, blockName)) {
-							existUpdate = true;
-							errs()<<"Added new conditional path: "<<blockName<<" "<<falseBlockName<<"\n";
-						}
-
-						if(can1 && addNewPath(canReachParent, trueBlockName, blockName)) {
-							existUpdate = true;
-							errs()<<"Added new conditional path: "<<blockName<<" "<<trueBlockName<<"\n";
-						}
-				
-					}
-				}
-
-				
-			}
-
-			// will loop again from the front. will be used in forloops
-			if(intervalAnalysis[blockName] != intervalInBlock) {
-				existUpdate = true;
-				intervalAnalysis[blockName] = intervalInBlock;
-			}
-
-			errs()<<"DONE PROCESSING "<<blockName<<"\n\n";
-
-
 		}
+
+		// will loop again from the front. will be used in forloops
+		if(intervalAnalysis[blockName] != intervalInBlock) {
+			existUpdate = true;
+			intervalAnalysis[blockName] = intervalInBlock;
+		}
+
+		errs()<<"DONE PROCESSING "<<blockName<<"\n\n";
+
+
 
 		printIntervals(intervalAnalysis, variables);
 		//exit(0);
