@@ -92,6 +92,9 @@ public:
 		return string(*this) == string(other);
 	}
 
+	bool operator<=(const AbstractNumber &other) const {
+		return *this < other || *this == other;
+	}
 
 	AbstractNumber operator+(AbstractNumber const& other) {
 
@@ -283,6 +286,21 @@ public:
 		return ret;
 	}
 
+	AbstractDomain operator*(AbstractDomain const& other) {
+		AbstractDomain ret = AbstractDomain(mn * other.mn, mx * other.mx);
+		return ret;
+	}
+
+	AbstractDomain operator/(AbstractDomain const& other) {
+		AbstractDomain ret = AbstractDomain(mn / other.mn, mx / other.mx);
+		return ret;
+	}
+
+	AbstractDomain operator%(AbstractDomain const& other) {
+		AbstractDomain ret = AbstractDomain(mn % other.mn, mx % other.mx);
+		return ret;
+	}
+
 	operator string() const { 
 		return "[" + string(mn) + ", " + string(mx) + "]";
 	}
@@ -345,6 +363,15 @@ string getValueName(const Value* Node) {
     return OS.str();
 }
 
+string instructionToString(const Instruction &I) {
+
+	string str;
+	raw_string_ostream(str) << I;
+
+	return str;
+
+}
+
 void mergeVariableIntervals(const VariableInterval& from, VariableInterval &to, function<AbstractDomain(AbstractDomain, AbstractDomain)> mergeFunc ) {
 	for(auto &variableData: from) {
 
@@ -377,14 +404,90 @@ set<Value*> findAllVariables(Function *F) {
 	return ret;
 }
 
+int getConstantIntValue(Value* var) {
+	assert(isa<ConstantInt>(var));
+
+	auto constantInt = llvm::cast<ConstantInt>(var);
+
+	return constantInt->getSExtValue ();
+
+}
+
 AbstractDomain getAbstractDomain(VariableInterval &variableInterval, Value* var) {
 	if(isa<ConstantInt>(var)) {
-		auto constantInt = llvm::cast<ConstantInt>(var);
 
-		return AbstractDomain(constantInt->getSExtValue (), constantInt->getSExtValue ());
+		int constValue = getConstantIntValue(var);
+		return AbstractDomain(constValue, constValue);
 	}
 
 	return variableInterval[var];
+}
+
+// stores result whether icmp result can be false (0) or true (1), or both
+struct IcmpResult {
+	bool can0, can1;
+
+	AbstractDomain toAbstractDomain() {
+
+		//either must be true
+		assert(can0 || can1);
+
+		int mn = can0 ? 0 : 1;
+		int mx = can1 ? 1 : 0;
+
+		return AbstractDomain(mn, mx); 
+	}
+};
+
+IcmpResult eqInterval(AbstractDomain interval, int C) {
+
+	AbstractNumber cAbs = AbstractNumber(C);
+
+	bool can0 = !(interval.mn == cAbs && interval.mn == cAbs);
+	bool can1 = interval.mn <= cAbs && cAbs <= interval.mx;
+
+	return IcmpResult{can0, can1};
+}
+
+IcmpResult neInterval(AbstractDomain interval, int C) {
+
+	auto res = eqInterval(interval, C);
+	swap(res.can0, res.can1);
+
+	return res;
+}
+
+IcmpResult sltInterval(AbstractDomain interval, int C) {
+	AbstractNumber cAbs = AbstractNumber(C);
+
+	bool can0 = cAbs <=  interval.mx;
+	bool can1 = interval.mn < cAbs;
+
+	return IcmpResult{can0, can1};
+}
+
+IcmpResult sgeInterval(AbstractDomain interval, int C) {
+	auto res = sltInterval(interval, C);
+	swap(res.can0, res.can1);
+
+	return res;
+}
+
+IcmpResult sleInterval(AbstractDomain interval, int C) {
+	AbstractNumber cAbs = AbstractNumber(C);
+
+	bool can0 = cAbs <  interval.mx;
+	bool can1 = interval.mn <= cAbs;
+
+	return IcmpResult{can0, can1};
+
+}
+
+IcmpResult sgtInterval(AbstractDomain interval, int C) {
+	auto res = sleInterval(interval, C);
+	swap(res.can0, res.can1);
+
+	return res;
 }
 
 // performs interval analysis using mergeFunc merger (merge, widening, narrowing)
@@ -476,11 +579,71 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, const map<str
 					case Instruction::Sub:
 						targetDomain = op1Domain - op2Domain;
 						break;
+
+					case Instruction::Mul:
+						targetDomain = op1Domain * op2Domain;
+						break;
+
+					case Instruction::SDiv:
+						targetDomain = op2Domain / op2Domain;
+						break;
+
+					case Instruction::SRem:
+						targetDomain = op1Domain % op2Domain;
+						break;
+					default:
+						errs()<<"ERROR: BINARY OPERATOR NOT SUPPORTED: "<<instructionToString(I)<<"\n";
+						assert(false);
+
 					}
+
 
 
 					intervalInBlock[target] = targetDomain;
 
+				} if(isa<CmpInst>(I)) {
+
+					CmpInst &Ic = llvm::cast<CmpInst>(I);
+
+					Value* op1 = Ic.getOperand(0);
+					Value* op2 = Ic.getOperand(1);
+
+					Value* target = llvm::cast<Value>(&I);
+
+					if(!isa<ConstantInt>(op2)) {
+						errs()<<"==== ERROR ICMP MUST BE WITH A CONSTANT INT, got: "<<instructionToString(I)<<"\n";
+					}
+
+					AbstractDomain op1Domain = getAbstractDomain(intervalInBlock, op1);
+					int constValue = getConstantIntValue(op2);
+
+					IcmpResult res;
+
+					switch(Ic.getPredicate()) {
+					case CmpInst::ICMP_NE:
+						res = neInterval(op1Domain, constValue);
+						break;
+					case CmpInst::ICMP_EQ:
+						res = eqInterval(op1Domain, constValue);
+						break;
+					case CmpInst::ICMP_SLE:
+						res = sleInterval(op1Domain, constValue);
+						break;
+					case CmpInst::ICMP_SGT:
+						res = sgtInterval(op1Domain, constValue);
+						break;
+					case CmpInst::ICMP_SLT:
+						res = sltInterval(op1Domain, constValue);
+						break;
+					case CmpInst::ICMP_SGE:
+						res = sgeInterval(op1Domain, constValue);
+						break;
+					default:
+						errs()<<"ERROR: ICMP INSTRUCTION NOT SUPPORTED: "<<instructionToString(I)<<"\n";
+
+					}
+
+					
 				}
 			}
 

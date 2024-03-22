@@ -8,6 +8,6 @@ int main() {
 		x = z - 5;
 
 	x = y / z % x;
-	assert (x < 5);
+	assert (x > 5);
 	return x;
 }
