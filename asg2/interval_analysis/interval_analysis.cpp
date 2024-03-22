@@ -88,6 +88,16 @@ public:
 		return number < other.number;
 	}
 
+	bool operator<=(int other) const {
+		AbstractNumber ot = AbstractNumber(other);
+		return *this <= ot;
+	}
+
+	bool operator>=(int other) const {
+		AbstractNumber ot = AbstractNumber(other);
+		return !(*this < ot);
+	}
+
 	bool operator==(const AbstractNumber &other) const {
 		return string(*this) == string(other);
 	}
@@ -490,11 +500,24 @@ IcmpResult sgtInterval(AbstractDomain interval, int C) {
 	return res;
 }
 
+bool addNewPath(map<string, set<string>> &paths, string from, string to) {
+	if(paths[from].find(to) != paths[from].end()) return false;
+
+	paths[from].insert(to);
+	return true;
+}
+
 // performs interval analysis using mergeFunc merger (merge, widening, narrowing)
-map<string, VariableInterval> intervalAnalysisProcess(Function *F, const map<string, VariableInterval> &savedIntervals, intervalMergeFunct mergeFunc)  {
+map<string, VariableInterval> intervalAnalysisProcess(Function *F, bool isPathSensitive, const map<string, VariableInterval> &savedIntervals, intervalMergeFunct mergeFunc)  {
 
 	map<string, VariableInterval> intervalAnalysis(savedIntervals);
 	
+	// for path sensitivity. canReachParent[block] records all predecessors of block that can each it
+	map<string, set<string>> canReachParent;
+
+	auto &entryBlock = F->getEntryBlock();
+	string entryBlockName = getSimpleNodeLabel(&entryBlock);
+
 	bool existUpdate = true;
 	while(existUpdate) {
 
@@ -513,15 +536,22 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, const map<str
 
 			// merge values from previous interval
 			VariableInterval intervalFromPredessors;
+			bool canSomebodyReach = false;
 			for(auto *Preds : predecessors(&BB)) {
 
 				string predBlockName = getSimpleNodeLabel(Preds);
-				//errs()<<"BB "<<predBlockName<<"\n";
 
-				// merge normally if have multiple precessors, then narrowing once with current saved interval
-				mergeVariableIntervals(intervalAnalysis[predBlockName], intervalFromPredessors, mergeNormal);
+				if(!isPathSensitive || canReachParent[blockName].find(predBlockName) != canReachParent[blockName].end()) {
+					// merge normally if have multiple precessors, then narrowing once with current saved interval
+					errs()<<"merging variables from "<<predBlockName<<"\n";
+					canSomebodyReach = true;
+					mergeVariableIntervals(intervalAnalysis[predBlockName], intervalFromPredessors, mergeNormal);
+				}
+		
 			}
 
+			// no parent can reach this means we dont need to process this (unreachable)
+			if(!canSomebodyReach && blockName != entryBlockName) continue;
 
 			mergeVariableIntervals(intervalFromPredessors, intervalInBlock, mergeFunc);
 
@@ -601,7 +631,7 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, const map<str
 
 					intervalInBlock[target] = targetDomain;
 
-				} if(isa<CmpInst>(I)) {
+				} if(isa<CmpInst>(I) && isPathSensitive) {
 
 					CmpInst &Ic = llvm::cast<CmpInst>(I);
 
@@ -640,11 +670,60 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, const map<str
 						break;
 					default:
 						errs()<<"ERROR: ICMP INSTRUCTION NOT SUPPORTED: "<<instructionToString(I)<<"\n";
+						assert(false);
 
 					}
 
+					intervalInBlock[target] = res.toAbstractDomain();
+
 					
+				} else if(isa<BranchInst>(I) && isPathSensitive) {
+					errs()<<"Found BR inst "<<instructionToString(I)<<"\n";
+
+					BranchInst &B = llvm::cast<BranchInst>(I);
+					if(B.isUnconditional()) {
+
+						auto nextBlock = B.getSuccessor(0);
+						string nextBlockName = getSimpleNodeLabel(nextBlock);
+						bool newPath = addNewPath(canReachParent, nextBlockName, blockName);
+
+						if(newPath) {
+							errs()<<"Added new path: "<<blockName<<" "<<nextBlockName<<"\n";
+						}
+
+					} else if(B.isConditional()) {
+						Value* condition = B.getCondition();
+
+						auto truePath = B.getSuccessor(0);
+						auto falsePath = B.getSuccessor(1);
+
+						string trueBlockName = getSimpleNodeLabel(truePath);
+						string falseBlockName = getSimpleNodeLabel(falsePath);
+
+						// interval must be inside [0, 1]
+						AbstractDomain conditionInterval = intervalInBlock[condition];
+						if(!(conditionInterval.mn >= 0 && conditionInterval.mx <= 1 && !conditionInterval.isEmpty)) {
+							errs()<<"INVALID INTERVAL FOUND in branch, variable: "<<getValueName(condition)<<" "<<conditionInterval<<"\n";
+							assert(false);
+						}
+
+						int can0 = (conditionInterval.mn == 0);
+						int can1 = (conditionInterval.mx == 1);
+
+						if(can0 && addNewPath(canReachParent, falseBlockName, blockName)) {
+							existUpdate = true;
+							errs()<<"Added new conditional path: "<<blockName<<" "<<falseBlockName<<"\n";
+						}
+
+						if(can1 && addNewPath(canReachParent, trueBlockName, blockName)) {
+							existUpdate = true;
+							errs()<<"Added new conditional path: "<<blockName<<" "<<trueBlockName<<"\n";
+						}
+				
+					}
 				}
+
+				
 			}
 
 			// will loop again from the front. will be used in forloops
@@ -652,6 +731,10 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, const map<str
 				existUpdate = true;
 				intervalAnalysis[blockName] = intervalInBlock;
 			}
+
+			errs()<<"DONE PROCESSING "<<blockName<<"\n\n";
+
+
 		}
 	}
 
@@ -681,8 +764,8 @@ int main(int argc, char **argv)  {
 
 	map<string, VariableInterval> intervals;
 
-	intervals = intervalAnalysisProcess(F, intervals, widening);
-	intervals = intervalAnalysisProcess(F, intervals, narrowing);
+	intervals = intervalAnalysisProcess(F, true, intervals, widening);
+	intervals = intervalAnalysisProcess(F, true, intervals, narrowing);
 
 	for(auto item: intervals) {
 		outs()<<"intervals in: "<<item.first<<"\n";
