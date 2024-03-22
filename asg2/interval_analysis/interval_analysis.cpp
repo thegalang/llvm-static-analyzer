@@ -287,7 +287,7 @@ public:
 
 	AbstractDomain operator+(AbstractDomain const& other) {
 		AbstractDomain ret = AbstractDomain(mn + other.mn, mx + other.mx);
-		outs()<<"adding "<<*this<<" "<<other<<" "<<ret<<"\n";
+		//outs()<<"adding "<<*this<<" "<<other<<" "<<ret<<"\n";
 		return ret;
 	}
 
@@ -507,8 +507,26 @@ bool addNewPath(map<string, set<string>> &paths, string from, string to) {
 	return true;
 }
 
-// performs interval analysis using mergeFunc merger (merge, widening, narrowing)
-map<string, VariableInterval> intervalAnalysisProcess(Function *F, bool isPathSensitive, const map<string, VariableInterval> &savedIntervals, intervalMergeFunct mergeFunc)  {
+int numPrint = 2;
+void printIntervals(map<string, VariableInterval> intervals, set<Value*> variables) {
+
+	for(auto item: intervals) {
+		outs()<<"intervals in: "<<item.first<<"\n";
+
+		for(auto varInterval: item.second) {
+			if(variables.find(varInterval.first) != variables.end())
+				outs()<<getValueName(varInterval.first)<<" "<<varInterval.second<<"\n";
+		}
+
+		outs()<<"\n";
+	}
+
+	numPrint--;
+	if(numPrint == 0) exit(0);
+}
+
+// Variables: set of Value* of program variables (for printing purposes only)
+map<string, VariableInterval> intervalAnalysisProcess(Function *F, bool isPathSensitive, const map<string, VariableInterval> &savedIntervals, set<Value*> variables, intervalMergeFunct mergeFunc)  {
 
 	map<string, VariableInterval> intervalAnalysis(savedIntervals);
 	
@@ -736,6 +754,9 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, bool isPathSe
 
 
 		}
+
+		printIntervals(intervalAnalysis, variables);
+		//exit(0);
 	}
 
 	return intervalAnalysis;
@@ -764,8 +785,8 @@ int main(int argc, char **argv)  {
 
 	map<string, VariableInterval> intervals;
 
-	intervals = intervalAnalysisProcess(F, true, intervals, widening);
-	intervals = intervalAnalysisProcess(F, true, intervals, narrowing);
+	intervals = intervalAnalysisProcess(F, true, intervals, variables, widening);
+	//intervals = intervalAnalysisProcess(F, true, intervals, narrowing);
 
 	for(auto item: intervals) {
 		outs()<<"intervals in: "<<item.first<<"\n";
