@@ -388,9 +388,9 @@ AbstractDomain getAbstractDomain(VariableInterval &variableInterval, Value* var)
 }
 
 // performs interval analysis using mergeFunc merger (merge, widening, narrowing)
-map<string, VariableInterval> intervalAnalysisProcess(Function *F, intervalMergeFunct mergeFunc)  {
+map<string, VariableInterval> intervalAnalysisProcess(Function *F, const map<string, VariableInterval> &savedIntervals, intervalMergeFunct mergeFunc)  {
 
-	map<string, VariableInterval> intervalAnalysis;
+	map<string, VariableInterval> intervalAnalysis(savedIntervals);
 	
 	bool existUpdate = true;
 	while(existUpdate) {
@@ -409,13 +409,18 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, intervalMerge
 			VariableInterval intervalInBlock = intervalAnalysis[blockName];
 
 			// merge values from previous interval
+			VariableInterval intervalFromPredessors;
 			for(auto *Preds : predecessors(&BB)) {
 
 				string predBlockName = getSimpleNodeLabel(Preds);
 				//errs()<<"BB "<<predBlockName<<"\n";
 
-				mergeVariableIntervals(intervalAnalysis[predBlockName], intervalInBlock, mergeFunc);
+				// merge normally if have multiple precessors, then narrowing once with current saved interval
+				mergeVariableIntervals(intervalAnalysis[predBlockName], intervalFromPredessors, mergeNormal);
 			}
+
+
+			mergeVariableIntervals(intervalFromPredessors, intervalInBlock, mergeFunc);
 
 
 			for(Instruction &I : BB) {
@@ -511,9 +516,12 @@ int main(int argc, char **argv)  {
 
 	intervalMergeFunct mergeAsF = mergeNormal;
 
-	auto normalIntervalAnalysis = intervalAnalysisProcess(F, mergeNormal);
+	map<string, VariableInterval> intervals;
 
-	for(auto item: normalIntervalAnalysis) {
+	intervals = intervalAnalysisProcess(F, intervals, widening);
+	intervals = intervalAnalysisProcess(F, intervals, narrowing);
+
+	for(auto item: intervals) {
 		outs()<<"intervals in: "<<item.first<<"\n";
 
 		for(auto varInterval: item.second) {
