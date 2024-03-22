@@ -388,7 +388,7 @@ void mergeVariableIntervals(const VariableInterval& from, VariableInterval &to, 
 
 		auto variableValue = variableData.first;
 		//errs()<<" merging "<<getValueName(variableValue)<<"\n";
-		to[variableValue] = mergeFunc(variableData.second, to[variableValue]);
+		to[variableValue] = mergeFunc(to[variableValue], variableData.second);
 	}
 }
 
@@ -500,38 +500,30 @@ IcmpResult sgtInterval(AbstractDomain interval, int C) {
 	return res;
 }
 
-bool addNewPath(map<string, set<string>> &paths, string from, string to) {
-	if(paths[from].find(to) != paths[from].end()) return false;
-
-	paths[from].insert(to);
-	return true;
-}
-
-int numPrint = 2;
+int numPrint = 21;
 void printIntervals(map<string, VariableInterval> intervals, set<Value*> variables) {
 
 	for(auto item: intervals) {
-		outs()<<"intervals in: "<<item.first<<"\n";
+		errs()<<"intervals in: "<<item.first<<"\n";
 
 		for(auto varInterval: item.second) {
 			if(variables.find(varInterval.first) != variables.end())
-				outs()<<getValueName(varInterval.first)<<" "<<varInterval.second<<"\n";
+				errs()<<getValueName(varInterval.first)<<" "<<varInterval.second<<"\n";
 		}
 
-		outs()<<"\n";
+		errs()<<"\n";
 	}
 
 	numPrint--;
 	if(numPrint == 0) exit(0);
 }
 
+
 // Variables: set of Value* of program variables (for printing purposes only)
 map<string, VariableInterval> intervalAnalysisProcess(Function *F, bool isPathSensitive, const map<string, VariableInterval> &savedIntervals, set<Value*> variables, intervalMergeFunct mergeFunc)  {
 
 	map<string, VariableInterval> intervalAnalysis(savedIntervals);
 	
-	// for path sensitivity. canReachParent[block] records all predecessors of block that can each it
-	map<string, set<string>> canReachParent;
 
 	auto &entryBlock = F->getEntryBlock();
 	string entryBlockName = getSimpleNodeLabel(&entryBlock);
@@ -549,7 +541,7 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, bool isPathSe
 		BasicBlock* BB = nextVisit.second;
 
 
-		string blockName = getSimpleNodeLabel(&BB);
+		string blockName = getSimpleNodeLabel(BB);
 
 		errs()<<"processing "<<blockName<<"\n";
 
@@ -561,18 +553,16 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, bool isPathSe
 
 			string predBlockName = getSimpleNodeLabel(parent);
 			errs()<<"merging variables from "<<predBlockName<<"\n";
-			canSomebodyReach = true;
-			mergeVariableIntervals(intervalAnalysis[predBlockName], intervalFromPredessors, mergeFunc);
+			mergeVariableIntervals(intervalAnalysis[predBlockName], intervalInBlock, mergeFunc);
 	
 		}
 
-		// no parent can reach this means we dont need to process this (unreachable)
-		if(!canSomebodyReach && blockName != entryBlockName) continue;
+		
 
-		mergeVariableIntervals(intervalFromPredessors, intervalInBlock, mergeFunc);
+		vector<pair<BasicBlock*, BasicBlock*>> nextNodeCandidates;
 
 
-		for(Instruction &I : BB) {
+		for(Instruction &I : *BB) {
 
 			if(isa<AllocaInst>(I)) {
 				Value* variable = llvm::cast<Value>(&I);
@@ -693,7 +683,7 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, bool isPathSe
 				intervalInBlock[target] = res.toAbstractDomain();
 
 				
-			} else if(isa<BranchInst>(I) && isPathSensitive) {
+			} else if(isa<BranchInst>(I)) {
 				errs()<<"Found BR inst "<<instructionToString(I)<<"\n";
 
 				BranchInst &B = llvm::cast<BranchInst>(I);
@@ -701,20 +691,24 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, bool isPathSe
 
 					auto nextBlock = B.getSuccessor(0);
 					string nextBlockName = getSimpleNodeLabel(nextBlock);
-					bool newPath = addNewPath(canReachParent, nextBlockName, blockName);
-
-					if(newPath) {
-						errs()<<"Added new path: "<<blockName<<" "<<nextBlockName<<"\n";
-					}
+					
+					traversalStack.push({BB, nextBlock});
 
 				} else if(B.isConditional()) {
 					Value* condition = B.getCondition();
 
-					auto truePath = B.getSuccessor(0);
-					auto falsePath = B.getSuccessor(1);
+					BasicBlock* truePath = B.getSuccessor(0);
+					BasicBlock* falsePath = B.getSuccessor(1);
 
 					string trueBlockName = getSimpleNodeLabel(truePath);
 					string falseBlockName = getSimpleNodeLabel(falsePath);
+
+					// just push both if not path sensitive
+					if(!isPathSensitive) {
+						nextNodeCandidates.push_back({BB, truePath});
+						nextNodeCandidates.push_back({BB, falsePath});
+						continue;
+					}
 
 					// interval must be inside [0, 1]
 					AbstractDomain conditionInterval = intervalInBlock[condition];
@@ -726,14 +720,14 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, bool isPathSe
 					int can0 = (conditionInterval.mn == 0);
 					int can1 = (conditionInterval.mx == 1);
 
-					if(can0 && addNewPath(canReachParent, falseBlockName, blockName)) {
-						existUpdate = true;
+					if(can0) {
 						errs()<<"Added new conditional path: "<<blockName<<" "<<falseBlockName<<"\n";
+						nextNodeCandidates.push_back({BB, falsePath});
 					}
 
-					if(can1 && addNewPath(canReachParent, trueBlockName, blockName)) {
-						existUpdate = true;
+					if(can1) {
 						errs()<<"Added new conditional path: "<<blockName<<" "<<trueBlockName<<"\n";
+						nextNodeCandidates.push_back({BB, truePath});
 					}
 			
 				}
@@ -743,16 +737,19 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, bool isPathSe
 		}
 
 		// will loop again from the front. will be used in forloops
+		
+		// fixpoint not reached
 		if(intervalAnalysis[blockName] != intervalInBlock) {
-			existUpdate = true;
 			intervalAnalysis[blockName] = intervalInBlock;
-		}
 
+			for(auto nextCandidate: nextNodeCandidates)
+				traversalStack.push(nextCandidate);
+		}
 		errs()<<"DONE PROCESSING "<<blockName<<"\n\n";
 
 
 
-		printIntervals(intervalAnalysis, variables);
+		//printIntervals(intervalAnalysis, variables);
 		//exit(0);
 	}
 
@@ -783,7 +780,7 @@ int main(int argc, char **argv)  {
 	map<string, VariableInterval> intervals;
 
 	intervals = intervalAnalysisProcess(F, true, intervals, variables, widening);
-	//intervals = intervalAnalysisProcess(F, true, intervals, narrowing);
+	intervals = intervalAnalysisProcess(F, true, intervals, variables, narrowing);
 
 	for(auto item: intervals) {
 		outs()<<"intervals in: "<<item.first<<"\n";
