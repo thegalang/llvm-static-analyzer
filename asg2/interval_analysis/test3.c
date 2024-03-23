@@ -2,7 +2,7 @@ int main() {
   int a = -2, b = 5, x = 0, y;
   // assume N is an input value
   int i = 0;
-  while (1) {
+  while (i++ < 100) {
     if (a > 0) {
       x = x + 7;
       y = 5;

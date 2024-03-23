@@ -1,5 +1,5 @@
 int main() {
-    int a,b,x,y,z = 0;
+    int x,y,z = 0;
     
     int i = 0;
     while(i < 100) {

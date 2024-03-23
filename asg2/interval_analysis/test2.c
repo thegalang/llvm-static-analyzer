@@ -7,7 +7,6 @@ int main() {
 	else
 		x = z - 5;
 
-	//x = y / z % x;
 	assert (x < 5);
 	return x;
 }

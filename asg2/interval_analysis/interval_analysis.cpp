@@ -522,7 +522,6 @@ void printSingleInterval(VariableInterval v, const set<Value*> &variables) {
 	}
 }
 
-int numPrint = 21;
 void printIntervals(map<string, VariableInterval> intervals, const set<Value*> &variables) {
 
 	for(auto item: intervals) {
@@ -533,8 +532,6 @@ void printIntervals(map<string, VariableInterval> intervals, const set<Value*> &
 		errs()<<"\n";
 	}
 
-	numPrint--;
-	if(numPrint == 0) exit(0);
 }
 
 
@@ -563,9 +560,9 @@ map<string, VariableInterval> mergeBlockPathSensitiveVariableInterval(map<string
 string WHILE_COND_BLOCK_NAME = "while.cond";
 
 // Variables: set of Value* of program variables (for printing purposes only)
-map<string, VariableInterval> intervalAnalysisProcess(Function *F, set<Value*> variables, intervalMergeFunct mergeFunc)  {
+map<string, PathSensitiveVariableInterval> intervalAnalysisProcess(Function *F, map<string, PathSensitiveVariableInterval> savedIntervals, set<Value*> variables, intervalMergeFunct mergeFunc)  {
 
-	map<string, PathSensitiveVariableInterval> intervalAnalysis;
+	map<string, PathSensitiveVariableInterval> intervalAnalysis(savedIntervals);
 
 
 	auto &entryBlock = F->getEntryBlock();
@@ -573,6 +570,14 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, set<Value*> v
 
 	// current block, variable intervals, and branches taken so far
 	stack<tuple<BasicBlock*, VariableInterval, PathSensitiveNode>> traversalStack;
+
+	// only stop traverse once all nodes are processed
+	set<BasicBlock*> unprocessedBlocks;
+	for(auto &BB : *F) {
+		unprocessedBlocks.insert(&BB);
+	}
+
+
 	traversalStack.push({&entryBlock, {}, {} });
 
 
@@ -585,10 +590,8 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, set<Value*> v
 		VariableInterval parentVariableInterval = get<1>(nextVisit);
 		PathSensitiveNode visitedBranches = get<2>(nextVisit);
 
-
 		string blockName = getSimpleNodeLabel(BB);
 
-		errs()<<"processing "<<blockName<<"\n";
 
 		VariableInterval intervalInBlock = parentVariableInterval;
 
@@ -747,14 +750,12 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, set<Value*> v
 					int can1 = (conditionInterval.mx == 1);
 
 					if(can0) {
-						errs()<<"Added new conditional path: "<<blockName<<" "<<falseBlockName<<"\n";
 						auto nextTakenBranches = visitedBranches;
 						nextTakenBranches.insert({&I, false});
 						candidates.push_back({falsePath, nextTakenBranches});
 					}
 
 					if(can1) {
-						errs()<<"Added new conditional path: "<<blockName<<" "<<trueBlockName<<"\n";
 						auto nextTakenBranches = visitedBranches;
 						nextTakenBranches.insert({&I, true});
 						candidates.push_back({truePath, nextTakenBranches});
@@ -762,7 +763,6 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, set<Value*> v
 
 					// while condition. it will never evaluate to false on its own so we push manually given that loop executes once
 					if(blockName == WHILE_COND_BLOCK_NAME && visitedBranches.find({&I, true}) != visitedBranches.end()) {
-						errs()<<"Manually push while condition exit\n";
 						auto nextTakenBranches = visitedBranches;
 						nextTakenBranches.insert({&I, false});
 						candidates.push_back({falsePath, nextTakenBranches});
@@ -774,16 +774,8 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, set<Value*> v
 			
 		}
 
-		// will loop again from the front. will be used in forloops
-		
-		// fixpoint not reached
-		// errs()<<"saved:\n";
-		// printSingleInterval(intervalAnalysis[blockName][visitedBranches], variables);
 
-		// errs()<<"new:\n";
-		// printSingleInterval(intervalInBlock, variables);
-
-		if(intervalAnalysis[blockName][visitedBranches] != intervalInBlock) {
+		if(intervalAnalysis[blockName][visitedBranches] != intervalInBlock || unprocessedBlocks.find(BB) != unprocessedBlocks.end()) {
 
 			//errs()<<"FIXPOINT NOT REACHED\n";
 
@@ -795,7 +787,8 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, set<Value*> v
 				traversalStack.push({get<0>(nextCandidate), intervalInBlock, get<1>(nextCandidate)});
 		}
 
-		errs()<<"DONE PROCESSING "<<blockName<<"\n\n";
+		unprocessedBlocks.erase(BB);
+
 
 
 
@@ -803,7 +796,7 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, set<Value*> v
 		//exit(0);
 	}
 
-	return mergeBlockPathSensitiveVariableInterval(intervalAnalysis);
+	return intervalAnalysis;
 
 }
 
@@ -827,11 +820,12 @@ int main(int argc, char **argv)  {
 
 	intervalMergeFunct mergeAsF = mergeNormal;
 
-	map<string, VariableInterval> intervals;
 
-	intervals = intervalAnalysisProcess(F, variables, widening);
+	auto pathSensitiveIntervals = intervalAnalysisProcess(F, {}, variables, widening);
 	
-	//intervals = intervalAnalysisProcess(F, true, intervals, variables, narrowing);
+	pathSensitiveIntervals = intervalAnalysisProcess(F, pathSensitiveIntervals, variables, narrowing);
+
+	auto intervals =  mergeBlockPathSensitiveVariableInterval(pathSensitiveIntervals);
 
 	for(auto item: intervals) {
 		outs()<<"intervals in: "<<item.first<<"\n";
