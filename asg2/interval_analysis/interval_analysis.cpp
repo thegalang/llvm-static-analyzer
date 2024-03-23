@@ -98,6 +98,18 @@ public:
 		return !(*this < ot);
 	}
 
+	bool operator<(int other) const {
+		AbstractNumber ot = AbstractNumber(other);
+		return *this < ot;
+	}
+
+	bool operator>(int other) const {
+		AbstractNumber ot = AbstractNumber(other);
+		return !(*this <= ot);
+	}
+
+
+
 	bool operator==(const AbstractNumber &other) const {
 		return string(*this) == string(other);
 	}
@@ -106,7 +118,7 @@ public:
 		return *this < other || *this == other;
 	}
 
-	AbstractNumber operator+(AbstractNumber const& other) {
+	AbstractNumber operator+(AbstractNumber const& other) const {
 
 		// assert error cannot add -inf and +inf
 		if(isPositiveInfinity() && other.isNegativeInfinity() || isNegativeInfinity() && other.isPositiveInfinity()) {
@@ -125,12 +137,14 @@ public:
 		return AbstractNumber(number + other.number);
 	}
 
-	AbstractNumber operator-(AbstractNumber const& other) {
-		// assert error cannot add -inf and +inf
-		if(isPositiveInfinity() && other.isNegativeInfinity() || isNegativeInfinity() && other.isPositiveInfinity()) {
-			errs()<<"CANNOT OPERATE +INF and -INF"<<"\n";
-			assert(false);
+	
+	// assume -inf - -inf = -inf
+	AbstractNumber operator-(AbstractNumber const& other) const {
+		// assume +inf - +inf = +inf and -inf - -inf = +inf (normally undefined)
+		if(isPositiveInfinity() && other.isPositiveInfinity() || isNegativeInfinity() && other.isNegativeInfinity()) {
+			return AbstractNumber(0, InfinityType::PositiveInfinity);
 		}
+
 
 		if(isPositiveInfinity() || other.isNegativeInfinity()) {
 			return AbstractNumber(0, InfinityType::PositiveInfinity);
@@ -143,7 +157,7 @@ public:
 		return AbstractNumber(number - other.number);
 	}
 
-	AbstractNumber operator*(AbstractNumber const& other) {
+	AbstractNumber operator*(AbstractNumber const& other) const {
 		
 		// -inf * inf = -inf. inf * inf = inf, -inf * -inf = inf
 		int numPositiveInfinity = isPositiveInfinity() + other.isPositiveInfinity();
@@ -166,7 +180,13 @@ public:
 			AbstractNumber finiteNumber =  (isInfinity()) ? other: *this;
 
 			if(finiteNumber.number == 0) return AbstractNumber(0, InfinityType::Finite);
-			else return AbstractNumber(0, infiniteNumber.infinityType);
+			else if (finiteNumber.number < 0) {
+
+				return (infiniteNumber.infinityType == InfinityType::PositiveInfinity) ? AbstractNumber(0, InfinityType::NegativeInfinity) : AbstractNumber(0, InfinityType::PositiveInfinity);
+				
+			} else {
+				return AbstractNumber(0, infiniteNumber.infinityType);
+			}
 		}
 		
 
@@ -176,7 +196,7 @@ public:
 	}
 
 
-	AbstractNumber operator/(AbstractNumber const& other) {
+	AbstractNumber operator/(AbstractNumber const& other) const {
 
 
 		// assert divide by 0
@@ -210,40 +230,6 @@ public:
 
 		return AbstractNumber(number / other.number);
 	}
-
-	AbstractNumber operator%(AbstractNumber const& other) {
-		// assert divide by 0
-		assert(!(other.isFinite() && other.number == 0));
-
-		// -inf * inf = -inf. inf * inf = inf, -inf * -inf = inf
-		int numPositiveInfinity = isPositiveInfinity() + other.isPositiveInfinity();
-		int numNegativeInfinity = isNegativeInfinity() + other.isNegativeInfinity();
-
-
-		// two infinites. inf / inf = inf, inf / -inf = -inf, -inf / inf = -inf, -inf/-inf = inf
-		if(numPositiveInfinity == 2 || numNegativeInfinity == 2) {
-			return AbstractNumber(0, InfinityType::PositiveInfinity);
-		}
-
-		// infininity modulo infinity should max at infinity
-		if(numPositiveInfinity == 1 && numNegativeInfinity == 1) {
-			return AbstractNumber(0, InfinityType::PositiveInfinity);
-		}
-
-
-		// if modulo by inf then first element
-		// if inf module then second element
-		if(numPositiveInfinity == 1 || numNegativeInfinity == 1) {
-
-			return (other.isInfinity()) ? *this : other;
-		}
-		
-
-		// two finites
-		return AbstractNumber(number % other.number);
-	}
-
-
 
 	operator std::string() const { 
 		if(isFinite()) return to_string(number);
@@ -292,22 +278,41 @@ public:
 	}
 
 	AbstractDomain operator-(AbstractDomain const& other) {
-		AbstractDomain ret = AbstractDomain(mn - other.mn, mx - other.mx);
+		AbstractDomain ret = AbstractDomain(mn - other.mx, mx - other.mn);
 		return ret;
 	}
 
 	AbstractDomain operator*(AbstractDomain const& other) {
-		AbstractDomain ret = AbstractDomain(mn * other.mn, mx * other.mx);
+
+		// signs can be switched if multplying by negative
+		AbstractDomain ret = AbstractDomain(min(mn * other.mx, mx * other.mn), max(mx * other.mx, mn * other.mn));
+
 		return ret;
 	}
 
 	AbstractDomain operator/(AbstractDomain const& other) {
-		AbstractDomain ret = AbstractDomain(mn / other.mn, mx / other.mx);
-		return ret;
+
+		if(other.mn < 0 && other.mx > 0) {
+
+			AbstractNumber minusOne = AbstractNumber(-1);
+			AbstractNumber absoluteMax = max(mn * minusOne, mx);
+			return AbstractDomain(minusOne * absoluteMax, absoluteMax);
+		} else {
+			AbstractNumber retMn = min(mn/other.mn, min(mn/other.mx, min(mx/other.mn, mx/other.mx)));
+			AbstractNumber retMx = max(mn/other.mn, max(mn/other.mx, max(mx/other.mn, mx/other.mx)));
+			return AbstractDomain(retMn, retMx);
+		}
 	}
 
 	AbstractDomain operator%(AbstractDomain const& other) {
-		AbstractDomain ret = AbstractDomain(mn % other.mn, mx % other.mx);
+
+		AbstractNumber one = AbstractNumber(1);
+
+		AbstractNumber maxPositive = (other.mx > 0) ? (other.mx - one) : AbstractNumber(0);
+		AbstractNumber minNegative = (other.mn < 0) ? (other.mn + one) : AbstractNumber(0);
+
+
+		AbstractDomain ret = AbstractDomain(minNegative, maxPositive);
 		return ret;
 	}
 
@@ -352,6 +357,17 @@ AbstractDomain narrowing(const AbstractDomain &a, const AbstractDomain &b) {
 // Value* variable, AbstractDomain: its range
 using VariableInterval = map<Value*, AbstractDomain>;
 
+// first: branchInst, second: if true ICMP in branch is taken, false then false branch is taken
+// set of all branches taken so far
+using PathSensitiveNode = set<pair<Instruction*, bool>>;
+
+// key: all the taken branches, value: variables in this taken branch
+using PathSensitiveVariableInterval = map<PathSensitiveNode, VariableInterval>;
+
+
+
+
+
 string getSimpleNodeLabel(const BasicBlock *Node) {
     if (!Node->getName().empty()){
 	//errs()<<Node->getName().str();
@@ -382,16 +398,15 @@ string instructionToString(const Instruction &I) {
 
 }
 
-void mergeVariableIntervals(const VariableInterval& from, VariableInterval &to, function<AbstractDomain(AbstractDomain, AbstractDomain)> mergeFunc ) {
+void mergeVariableIntervals(const VariableInterval &from, VariableInterval &to, function<AbstractDomain(AbstractDomain, AbstractDomain)> mergeFunc ) {
 	for(auto &variableData: from) {
 
 
 		auto variableValue = variableData.first;
 		//errs()<<" merging "<<getValueName(variableValue)<<"\n";
-		to[variableValue] = mergeFunc(to[variableValue], variableData.second);
+		to[variableValue] = mergeFunc(variableData.second, to[variableValue]);
 	}
 }
-
 using intervalMergeFunct = function<AbstractDomain(const AbstractDomain&, const AbstractDomain&)>;
 
 // find all variables in the program
@@ -500,16 +515,20 @@ IcmpResult sgtInterval(AbstractDomain interval, int C) {
 	return res;
 }
 
+void printSingleInterval(VariableInterval v, const set<Value*> &variables) {
+	for(auto varInterval: v) {
+		if(variables.find(varInterval.first) != variables.end())
+			errs()<<getValueName(varInterval.first)<<" "<<varInterval.second<<"\n";
+	}
+}
+
 int numPrint = 21;
-void printIntervals(map<string, VariableInterval> intervals, set<Value*> variables) {
+void printIntervals(map<string, VariableInterval> intervals, const set<Value*> &variables) {
 
 	for(auto item: intervals) {
 		errs()<<"intervals in: "<<item.first<<"\n";
 
-		for(auto varInterval: item.second) {
-			if(variables.find(varInterval.first) != variables.end())
-				errs()<<getValueName(varInterval.first)<<" "<<varInterval.second<<"\n";
-		}
+		printSingleInterval(item.second, variables);
 
 		errs()<<"\n";
 	}
@@ -519,48 +538,62 @@ void printIntervals(map<string, VariableInterval> intervals, set<Value*> variabl
 }
 
 
-// Variables: set of Value* of program variables (for printing purposes only)
-map<string, VariableInterval> intervalAnalysisProcess(Function *F, bool isPathSensitive, const map<string, VariableInterval> &savedIntervals, set<Value*> variables, intervalMergeFunct mergeFunc)  {
+// this is called at the end of the analysis to merge all intervals on the same block with different path coverage
+VariableInterval mergePathSensitiveVariableInterval(PathSensitiveVariableInterval intervals) {
 
-	map<string, VariableInterval> intervalAnalysis(savedIntervals);
-	
+	VariableInterval ret;
+
+	for(auto varInterval: intervals) {
+		mergeVariableIntervals(varInterval.second, ret, mergeNormal);
+	}
+
+	return ret;
+}
+
+map<string, VariableInterval> mergeBlockPathSensitiveVariableInterval(map<string, PathSensitiveVariableInterval> mp) {
+
+	map<string, VariableInterval> ret;
+	for(auto item: mp) {
+		ret[item.first] = mergePathSensitiveVariableInterval(item.second);
+	}
+
+	return ret;
+}
+
+string WHILE_COND_BLOCK_NAME = "while.cond";
+
+// Variables: set of Value* of program variables (for printing purposes only)
+map<string, VariableInterval> intervalAnalysisProcess(Function *F, set<Value*> variables, intervalMergeFunct mergeFunc)  {
+
+	map<string, PathSensitiveVariableInterval> intervalAnalysis;
+
 
 	auto &entryBlock = F->getEntryBlock();
 	string entryBlockName = getSimpleNodeLabel(&entryBlock);
 
-	// parent, child
-	stack<pair<BasicBlock*, BasicBlock*>> traversalStack;
-	traversalStack.push({nullptr, &entryBlock});
+	// current block, variable intervals, and branches taken so far
+	stack<tuple<BasicBlock*, VariableInterval, PathSensitiveNode>> traversalStack;
+	traversalStack.push({&entryBlock, {}, {} });
+
 
 	while(!traversalStack.empty()) {
 
 		auto nextVisit = traversalStack.top();
 		traversalStack.pop();
 
-		BasicBlock* parent = nextVisit.first;
-		BasicBlock* BB = nextVisit.second;
+		BasicBlock* BB = get<0>(nextVisit);
+		VariableInterval parentVariableInterval = get<1>(nextVisit);
+		PathSensitiveNode visitedBranches = get<2>(nextVisit);
 
 
 		string blockName = getSimpleNodeLabel(BB);
 
 		errs()<<"processing "<<blockName<<"\n";
 
+		VariableInterval intervalInBlock = parentVariableInterval;
 
-		VariableInterval intervalInBlock = intervalAnalysis[blockName];
-
-		// merge values from parent block
-		if(parent != nullptr) {
-
-			string predBlockName = getSimpleNodeLabel(parent);
-			errs()<<"merging variables from "<<predBlockName<<"\n";
-			mergeVariableIntervals(intervalAnalysis[predBlockName], intervalInBlock, mergeFunc);
-	
-		}
-
-		
-
-		vector<pair<BasicBlock*, BasicBlock*>> nextNodeCandidates;
-
+		// store next where to push if current has not reached fixpoint
+		vector<tuple<BasicBlock*, PathSensitiveNode>> candidates;
 
 		for(Instruction &I : *BB) {
 
@@ -621,7 +654,7 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, bool isPathSe
 					break;
 
 				case Instruction::SDiv:
-					targetDomain = op2Domain / op2Domain;
+					targetDomain = op1Domain / op2Domain;
 					break;
 
 				case Instruction::SRem:
@@ -637,7 +670,7 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, bool isPathSe
 
 				intervalInBlock[target] = targetDomain;
 
-			} if(isa<CmpInst>(I) && isPathSensitive) {
+			} if(isa<CmpInst>(I)) {
 
 				CmpInst &Ic = llvm::cast<CmpInst>(I);
 
@@ -684,7 +717,6 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, bool isPathSe
 
 				
 			} else if(isa<BranchInst>(I)) {
-				errs()<<"Found BR inst "<<instructionToString(I)<<"\n";
 
 				BranchInst &B = llvm::cast<BranchInst>(I);
 				if(B.isUnconditional()) {
@@ -692,7 +724,7 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, bool isPathSe
 					auto nextBlock = B.getSuccessor(0);
 					string nextBlockName = getSimpleNodeLabel(nextBlock);
 					
-					traversalStack.push({BB, nextBlock});
+					candidates.push_back({nextBlock, visitedBranches});
 
 				} else if(B.isConditional()) {
 					Value* condition = B.getCondition();
@@ -703,12 +735,6 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, bool isPathSe
 					string trueBlockName = getSimpleNodeLabel(truePath);
 					string falseBlockName = getSimpleNodeLabel(falsePath);
 
-					// just push both if not path sensitive
-					if(!isPathSensitive) {
-						nextNodeCandidates.push_back({BB, truePath});
-						nextNodeCandidates.push_back({BB, falsePath});
-						continue;
-					}
 
 					// interval must be inside [0, 1]
 					AbstractDomain conditionInterval = intervalInBlock[condition];
@@ -722,12 +748,24 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, bool isPathSe
 
 					if(can0) {
 						errs()<<"Added new conditional path: "<<blockName<<" "<<falseBlockName<<"\n";
-						nextNodeCandidates.push_back({BB, falsePath});
+						auto nextTakenBranches = visitedBranches;
+						nextTakenBranches.insert({&I, false});
+						candidates.push_back({falsePath, nextTakenBranches});
 					}
 
 					if(can1) {
 						errs()<<"Added new conditional path: "<<blockName<<" "<<trueBlockName<<"\n";
-						nextNodeCandidates.push_back({BB, truePath});
+						auto nextTakenBranches = visitedBranches;
+						nextTakenBranches.insert({&I, true});
+						candidates.push_back({truePath, nextTakenBranches});
+					}
+
+					// while condition. it will never evaluate to false on its own so we push manually given that loop executes once
+					if(blockName == WHILE_COND_BLOCK_NAME && visitedBranches.find({&I, true}) != visitedBranches.end()) {
+						errs()<<"Manually push while condition exit\n";
+						auto nextTakenBranches = visitedBranches;
+						nextTakenBranches.insert({&I, false});
+						candidates.push_back({falsePath, nextTakenBranches});
 					}
 			
 				}
@@ -739,12 +777,24 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, bool isPathSe
 		// will loop again from the front. will be used in forloops
 		
 		// fixpoint not reached
-		if(intervalAnalysis[blockName] != intervalInBlock) {
-			intervalAnalysis[blockName] = intervalInBlock;
+		// errs()<<"saved:\n";
+		// printSingleInterval(intervalAnalysis[blockName][visitedBranches], variables);
 
-			for(auto nextCandidate: nextNodeCandidates)
-				traversalStack.push(nextCandidate);
+		// errs()<<"new:\n";
+		// printSingleInterval(intervalInBlock, variables);
+
+		if(intervalAnalysis[blockName][visitedBranches] != intervalInBlock) {
+
+			//errs()<<"FIXPOINT NOT REACHED\n";
+
+			mergeVariableIntervals(intervalAnalysis[blockName][visitedBranches], intervalInBlock, mergeFunc);
+
+			intervalAnalysis[blockName][visitedBranches] = intervalInBlock;
+
+			for(auto nextCandidate: candidates)
+				traversalStack.push({get<0>(nextCandidate), intervalInBlock, get<1>(nextCandidate)});
 		}
+
 		errs()<<"DONE PROCESSING "<<blockName<<"\n\n";
 
 
@@ -753,7 +803,7 @@ map<string, VariableInterval> intervalAnalysisProcess(Function *F, bool isPathSe
 		//exit(0);
 	}
 
-	return intervalAnalysis;
+	return mergeBlockPathSensitiveVariableInterval(intervalAnalysis);
 
 }
 
@@ -779,8 +829,9 @@ int main(int argc, char **argv)  {
 
 	map<string, VariableInterval> intervals;
 
-	intervals = intervalAnalysisProcess(F, true, intervals, variables, widening);
-	intervals = intervalAnalysisProcess(F, true, intervals, variables, narrowing);
+	intervals = intervalAnalysisProcess(F, variables, widening);
+	
+	//intervals = intervalAnalysisProcess(F, true, intervals, variables, narrowing);
 
 	for(auto item: intervals) {
 		outs()<<"intervals in: "<<item.first<<"\n";
